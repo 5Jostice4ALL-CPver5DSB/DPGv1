@@ -16,19 +16,33 @@ import { MasqrMiddleware } from "./masqr.js";
 dotenv.config();
 ServerResponse.prototype.setMaxListeners(50);
 
-const port = 2345, server = createServer(), bare = createBareServer("/seal/");
+const port = process.env.PORT || 2345;
+const server = createServer();
+const bare = createBareServer("/seal/");
+
 server.on("upgrade", (req, sock, head) =>
   bare.shouldRoute(req) ? bare.routeUpgrade(req, sock, head)
   : req.url.endsWith("/wisp/") ? wisp.routeRequest(req, sock, head)
   : sock.end()
 );
+
 const app = Fastify({
-  serverFactory: h => (server.on("request", (req,res) =>
-    bare.shouldRoute(req) ? bare.routeRequest(req,res) : h(req,res)), server),
+  serverFactory: h => (server.on("request", (req, res) =>
+    bare.shouldRoute(req) ? bare.routeRequest(req, res) : h(req, res)), server),
   logger: false
 });
 
 await app.register(fastifyCookie);
+
+// Security Headers Hook
+app.addHook("onSend", async (req, reply, payload) => {
+  reply.header("X-Content-Type-Options", "nosniff");
+  reply.header("X-Frame-Options", "DENY");
+  reply.header("X-XSS-Protection", "1; mode=block");
+  reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  return payload;
+});
+
 [
   { root: join(import.meta.dirname, "dist"), prefix: "/", decorateReply: true },
   { root: epoxyPath, prefix: "/epoxy/" },
@@ -36,38 +50,43 @@ await app.register(fastifyCookie);
   { root: bareModulePath, prefix: "/baremod/" },
   { root: join(import.meta.dirname, "dist/uv"), prefix: "/_dist_uv/" },
   { root: uvPath, prefix: "/_uv/" }
-].forEach(r => app.register(fastifyStatic, { ...r, decorateReply: r.decorateReply||false }));
+].forEach(r => app.register(fastifyStatic, { ...r, decorateReply: r.decorateReply || false }));
 
 app.get("/uv/*", async (req, reply) =>
-  reply.sendFile(req.params["*"], await access(join(import.meta.dirname,"dist/uv",req.params["*"]))
-    .then(()=>join(import.meta.dirname,"dist/uv")).catch(()=>uvPath))
+  reply.sendFile(req.params["*"], await access(join(import.meta.dirname, "dist/uv", req.params["*"]))
+    .then(() => join(import.meta.dirname, "dist/uv")).catch(() => uvPath))
 );
 
 if (process.env.MASQR === "true")
   app.addHook("onRequest", MasqrMiddleware);
 
-const proxy = (url, type="application/javascript") => async (req, reply) => {
+const proxy = (url, type = "application/javascript") => async (req, reply) => {
   try {
-    const res = await fetch(url(req)); if (!res.ok) return reply.code(res.status).send();
-    if (res.headers.get("content-type")) reply.type(res.headers.get("content-type")); else reply.type(type);
+    const res = await fetch(url(req)); 
+    if (!res.ok) return reply.code(res.status).send();
+    if (res.headers.get("content-type")) reply.type(res.headers.get("content-type")); 
+    else reply.type(type);
     return reply.send(Buffer.from(await res.arrayBuffer()));
-  } catch { return reply.code(500).send(); }
+  } catch { 
+    return reply.code(500).send({ error: "Internal Proxy Error" }); 
+  }
 };
 
 app.get("/assets/img/*", proxy(req => `https://dogeub-assets.pages.dev/img/${req.params["*"]}`, ""));
-app.get("/js/script.js", proxy(()=> "https://byod.privatedns.org/js/script.js"));
+app.get("/js/script.js", proxy(() => "https://byod.privatedns.org/js/script.js"));
 
 app.get("/return", async (req, reply) =>
   req.query?.q
     ? fetch(`https://duckduckgo.com/ac/?q=${encodeURIComponent(req.query.q)}`)
-        .then(r => r.json()).catch(()=>reply.code(500).send({error:"request failed"}))
-    : reply.code(401).send({ error: "query parameter?" })
+        .then(r => r.json()).catch(() => reply.code(500).send({ error: "request failed" }))
+    : reply.code(401).send({ error: "query parameter required" })
 );
 
 app.setNotFoundHandler((req, reply) =>
-  req.raw.method==="GET" && req.headers.accept?.includes("text/html")
+  req.raw.method === "GET" && req.headers.accept?.includes("text/html")
     ? reply.sendFile("index.html")
     : reply.code(404).send({ error: "Not Found" })
 );
 
-app.listen({ port }).then(()=>console.log(`Server running on ${port}`));
+app.listen({ port }).then(() => console.log(`Server running securely on port ${port}`));
+```[cite: 17]
